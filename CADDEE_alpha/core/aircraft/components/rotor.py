@@ -84,40 +84,50 @@ class Rotor(Component):
 
                 else:
                     raise Exception(f"Invalid smallest dimension {smllst_dim}. Needs to be 0, 1, 2. This is unlikely to be a user error")
-                
-    def actuate(
-            self, 
-            x_tilt_angle: Union[float, int, csdl.Variable, None]=None, 
-            y_tilt_angle: Union[float, int, csdl.Variable, None]=None
-        ):
+
+
+    def actuate(self, angle, axis_origin=None, axis_vector=None):
+        if axis_origin is None:
+            raise NotImplementedError
+        if axis_vector is None:
+            raise NotImplementedError
+        
         rotor_geometry = self.geometry
-        if rotor_geometry is None:
-            raise ValueError("rotor component cannot be actuated since it does not have a geometry (i.e., geometry=None)")
+        rotor_geometry.rotate(axis_origin=axis_origin, axis_vector=axis_origin-axis_vector, angles=angle)
+                    
+    # def actuate(
+    #         self, 
+    #         x_tilt_angle: Union[float, int, csdl.Variable, None]=None, 
+    #         y_tilt_angle: Union[float, int, csdl.Variable, None]=None
+    #     ):
+    #     rotor_geometry = self.geometry
+    #     if rotor_geometry is None:
+    #         raise ValueError("rotor component cannot be actuated since it does not have a geometry (i.e., geometry=None)")
 
-        if x_tilt_angle is None and y_tilt_angle is None:
-            raise ValueError("Must either specify 'x_tilt_angle' or 'y_tilt_angle'")
+    #     if x_tilt_angle is None and y_tilt_angle is None:
+    #         raise ValueError("Must either specify 'x_tilt_angle' or 'y_tilt_angle'")
 
-        if x_tilt_angle is not None:    
-            axis_origin_x = rotor_geometry.evaluate(self._corner_point_1)
-            axis_vector_x = axis_origin_x - rotor_geometry.evaluate(self._corner_point_2)
+    #     if x_tilt_angle is not None:    
+    #         axis_origin_x = rotor_geometry.evaluate(self._corner_point_1)
+    #         axis_vector_x = axis_origin_x - rotor_geometry.evaluate(self._corner_point_2)
 
-            rotor_geometry.rotate(axis_origin_x, axis_vector_x / csdl.norm(axis_vector_x), angles=x_tilt_angle)
+    #         rotor_geometry.rotate(axis_origin_x, axis_vector_x / csdl.norm(axis_vector_x), angles=x_tilt_angle)
 
-        if y_tilt_angle is not None:
-            axis_origin_y = rotor_geometry.evaluate(self._corner_point_4)
-            axis_vector_y = axis_origin_y - rotor_geometry.evaluate(self._corner_point_3)
+    #     if y_tilt_angle is not None:
+    #         axis_origin_y = rotor_geometry.evaluate(self._corner_point_4)
+    #         axis_vector_y = axis_origin_y - rotor_geometry.evaluate(self._corner_point_3)
             
-            rotor_geometry.rotate(axis_origin_y, axis_vector_y / csdl.norm(axis_vector_y), angles=y_tilt_angle)
+    #         rotor_geometry.rotate(axis_origin_y, axis_vector_y / csdl.norm(axis_vector_y), angles=y_tilt_angle)
 
-        # Re-evaluate all the meshes associated with the wing
-        for mesh_name, mesh in self._discretizations.items():
-            try:
-                mesh = mesh._update()
-                self._discretizations[mesh_name] = mesh
-                print("Update rotor mesh")
-            except AttributeError:
-                raise Exception(f"Mesh {mesh_name} does not have an '_update' method, which is neded to" + \
-                                " re-evaluate the geometry/meshes after the geometry coefficients have been changed")
+    #     # Re-evaluate all the meshes associated with the wing
+    #     for mesh_name, mesh in self._discretizations.items():
+    #         try:
+    #             mesh = mesh._update()
+    #             self._discretizations[mesh_name] = mesh
+    #             print("Update rotor mesh")
+    #         except AttributeError:
+    #             raise Exception(f"Mesh {mesh_name} does not have an '_update' method, which is neded to" + \
+    #                             " re-evaluate the geometry/meshes after the geometry coefficients have been changed")
 
 
     def _setup_ffd_block(self, ffd_block, parameterization_solver, plot: bool=False):

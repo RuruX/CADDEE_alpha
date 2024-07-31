@@ -728,6 +728,411 @@ def make_vlm_surface(
 
     return vlm_mesh
 
+@dataclass
+class PanelDiscretization(Discretization):
+    nodal_coordinates:csdl.Variable=None
+    
+class PanelMesh(SolverMesh):
+    def __init__(self):
+        self.discretizations = DiscretizationsDict()
+
+def make_wing_panel_mesh(
+    wing_comp,
+    num_spanwise: int,
+    num_chordwise: int, 
+    spacing_spanwise: str = 'linear',
+    spacing_chordwise: str = 'linear',
+    chord_wise_points_for_airfoil = None,
+    ignore_camber: bool = False, 
+    plot: bool = False,
+    grid_search_density: int = 10,
+    LE_interp : Union[str, None] = None,
+    TE_interp : Union[str, None] = None,
+) -> PanelMesh:
+    """Make a panel mesh for wing-like components. This method is NOT 
+    intended for vertically oriented lifting surfaces like a vertical tail.
+
+    Parameters
+    ----------
+    wing_comp : Wing
+        instance of a 'Wing' component
+    
+    num_spanwise : int
+        number of span-wise panels (note that if odd, 
+        central panel will be larger)
+    
+    num_chordwise : int
+        number of chord-wise panels
+    
+    spacing_spanwise : str, optional
+        spacing of the span-wise panels (linear or cosine 
+        currently supported), by default 'linear'
+    
+    spacing_chordwise : str, optional
+        spacing of the chord-wise panels (linear or cosine 
+        currently supported), by default 'linear'
+    
+    plot : bool, optional
+        plot the projections, by default False
+    
+    grid_search_density : int, optional
+        parameter to refine the quality of projections (note that the higher this parameter 
+        the longer the projections will take; for finer meshes, especially with cosine 
+        spacing, a value of 40-50 is recommended), by default 10
+
+    Returns
+    -------
+    wing_panel_mesh: csdl.VariableGroup
+        data class storing the mesh coordinates and mesh velocities (latter will be set later)
+
+    """
+    from CADDEE_alpha.core.aircraft.components.wing import Wing
+    csdl.check_parameter(wing_comp, "wing_comp", types=Wing)
+    csdl.check_parameter(num_spanwise, "num_spanwise", types=int)
+    csdl.check_parameter(num_chordwise, "num_chordwise", types=int)
+    csdl.check_parameter(spacing_spanwise, "spacing_spanwise", values=("linear", "cosine"))
+    csdl.check_parameter(spacing_chordwise, "spacing_chordwise", values=("linear", "cosine"))
+    csdl.check_parameter(plot, "plot", types=bool)
+    csdl.check_parameter(grid_search_density, "grid_search_density", types=int)
+    csdl.check_parameter(ignore_camber, "ignore_camber", types=bool)
+    csdl.check_parameter(LE_interp, "LE_interp", values=("ellipse", None))
+    csdl.check_parameter(TE_interp, "TE_interp", values=("ellipse", None))
+
+    if wing_comp.geometry is None:
+        raise Exception("Cannot generate mesh for component with geoemetry=None")
+
+    if num_spanwise % 2 != 0:
+        raise Exception("Number of spanwise panels must be even.")
+
+    wing_geometry: FunctionSet = wing_comp.geometry
+
+    LE_left_point = wing_geometry.evaluate(wing_comp._LE_left_point).value
+    LE_mid_point = wing_geometry.evaluate(wing_comp._LE_mid_point).value
+    LE_right_point = wing_geometry.evaluate(wing_comp._LE_right_point).value
+
+    TE_left_point = wing_geometry.evaluate(wing_comp._TE_left_point).value
+    TE_mid_point = wing_geometry.evaluate(wing_comp._TE_mid_point).value
+    TE_right_point = wing_geometry.evaluate(wing_comp._TE_right_point).value
+
+    if spacing_spanwise == "linear":
+        num_spanwise_half = int(num_spanwise / 2)
+        LE_points_1 = np.linspace(LE_left_point, LE_mid_point, num_spanwise_half + 1)
+        LE_points_2 = np.linspace(LE_mid_point, LE_right_point, num_spanwise_half + 1)
+        
+        # Check whether spanwise points should projected based on ellipse
+        if LE_interp is not None:
+            array_to_project = np.zeros((num_spanwise + 1, 3))
+            y = np.array([LE_left_point[1], LE_mid_point[1], LE_right_point[1]])
+            z = np.array([LE_left_point[2], LE_mid_point[2], LE_right_point[2]])
+            fz = interp1d(y, z, kind="linear")
+
+            # Set up equation for an ellipse
+            h = LE_left_point[0]
+            b = 2 * (h - LE_mid_point[0]) # Semi-minor axis
+            a = LE_right_point[1] # semi-major axis
+            
+            interp_y_1 = np.linspace(y[0], y[1], num_spanwise_half+1)
+            interp_y_2 = np.linspace(y[1], y[2], num_spanwise_half+1)
+
+            array_to_project[0:num_spanwise_half+1, 0] = (b**2 * (1 - interp_y_1**2/a**2))**0.5 + h
+            array_to_project[0:num_spanwise_half+1, 1] = interp_y_1
+            array_to_project[0:num_spanwise_half+1, 2] = fz(interp_y_1)
+
+            array_to_project[num_spanwise_half:, 0] = (b**2 * (1 - interp_y_2**2/a**2))**0.5 + h
+            array_to_project[num_spanwise_half:, 1] = interp_y_2
+            array_to_project[num_spanwise_half:, 2] = fz(interp_y_2)
+
+            LE_points = array_to_project
+        else:
+            LE_points = np.vstack((LE_points_1, LE_points_2[1:, :]))
+
+        TE_points_1 = np.linspace(TE_left_point, TE_mid_point, num_spanwise_half + 1)
+        TE_points_2 = np.linspace(TE_mid_point, TE_right_point, num_spanwise_half + 1)
+        # Check whether spanwise points should projected based on ellipse
+        if TE_interp is not None:
+            array_to_project = np.zeros((num_spanwise + 1, 3))
+            y = np.array([TE_left_point[1], TE_mid_point[1], TE_right_point[1]])
+            z = np.array([TE_left_point[2], TE_mid_point[2], TE_right_point[2]])
+            fz = interp1d(y, z, kind="linear")
+
+            # Set up equation for an ellipse
+            h = TE_left_point[0]
+            b = 2 * (h - TE_mid_point[0]) # Semi-minor axis
+            a = TE_right_point[1] # semi-major axis
+
+            interp_y_1 = np.linspace(y[0], y[1], num_spanwise_half+1)
+            interp_y_2 = np.linspace(y[1], y[2], num_spanwise_half+1)
+
+            array_to_project[0:num_spanwise_half+1, 0] = -(b**2 * (1 - interp_y_1**2/a**2))**0.5 + h
+            array_to_project[0:num_spanwise_half+1, 1] = interp_y_1
+            array_to_project[0:num_spanwise_half+1, 2] = fz(interp_y_1)
+
+            array_to_project[num_spanwise_half:, 0] = -(b**2 * (1 - interp_y_2**2/a**2))**0.5 + h
+            array_to_project[num_spanwise_half:, 1] = interp_y_2
+            array_to_project[num_spanwise_half:, 2] = fz(interp_y_2)
+            
+            TE_points = array_to_project
+        else:
+            TE_points = np.vstack((TE_points_1, TE_points_2[1:, :]))
+    
+    elif spacing_spanwise == "cosine":
+        num_spanwise_half = int(num_spanwise / 2)
+        if LE_interp is not None:
+            array_to_project = np.zeros((num_spanwise + 1, 3))
+            y = np.array([LE_left_point[1], LE_mid_point[1], LE_right_point[1]])
+            z = np.array([LE_left_point[2], LE_mid_point[2], LE_right_point[2]])
+            fz = interp1d(y, z, kind="linear")
+
+            # Set up equation for an ellipse
+            h = LE_left_point[0]
+            b = 2 * (h - LE_mid_point[0]) # Semi-minor axis
+            a = LE_right_point[1] # semi-major axis
+            
+            i_vec = np.arange(0, num_spanwise_half+1)
+            half_cos = np.linspace(0, 1, len(i_vec))**2
+            # half_cos = 1 - np.cos(i_vec * np.pi / (2 * num_spanwise_half))
+
+            interp_y_1 = y[0] - (y[0] - y[1]) * half_cos
+            interp_y_2 = np.flip(y[2] - (y[2] - y[1]) * half_cos)
+
+            array_to_project[0:num_spanwise_half+1, 0] = (b**2 * (1 - interp_y_1**2/a**2))**0.5 + h
+            array_to_project[0:num_spanwise_half+1, 1] = interp_y_1
+            array_to_project[0:num_spanwise_half+1, 2] = fz(interp_y_1)
+
+            array_to_project[num_spanwise_half:, 0] = (b**2 * (1 - interp_y_2**2/a**2))**0.5 + h
+            array_to_project[num_spanwise_half:, 1] = interp_y_2
+            array_to_project[num_spanwise_half:, 2] = fz(interp_y_2)
+
+            LE_points = array_to_project
+        else:
+            LE_points_1 = cosine_spacing(num_spanwise_half + 1, np.linspace(LE_mid_point, LE_left_point, num_spanwise_half + 1))
+            LE_points_2 = cosine_spacing(num_spanwise_half + 1, np.linspace(LE_mid_point, LE_right_point, num_spanwise_half + 1), flip=True)
+            LE_points = np.vstack((LE_points_1, LE_points_2[1:, :]))
+
+        if TE_interp is not None:
+            array_to_project = np.zeros((num_spanwise + 1, 3))
+            y = np.array([TE_left_point[1], TE_mid_point[1], TE_right_point[1]])
+            z = np.array([TE_left_point[2], TE_mid_point[2], TE_right_point[2]])
+            fz = interp1d(y, z, kind="linear")
+
+            # Set up equation for an ellipse
+            h = TE_left_point[0]
+            b = 2 * (h - TE_mid_point[0]) # Semi-minor axis
+            a = TE_right_point[1] # semi-major axis
+            
+            i_vec = np.arange(0, num_spanwise_half+1)
+            half_cos = np.linspace(0, 1, len(i_vec))**2
+            # half_cos = 1 - np.cos(i_vec * np.pi / (2 * num_spanwise_half))
+
+            interp_y_1 = y[0] - (y[0] - y[1]) * half_cos
+            interp_y_2 = np.flip(y[2] - (y[2] - y[1]) * half_cos)
+
+            array_to_project[0:num_spanwise_half+1, 0] = -(b**2 * (1 - interp_y_1**2/a**2))**0.5 + h
+            array_to_project[0:num_spanwise_half+1, 1] = interp_y_1
+            array_to_project[0:num_spanwise_half+1, 2] = fz(interp_y_1)
+
+            array_to_project[num_spanwise_half:, 0] = -(b**2 * (1 - interp_y_2**2/a**2))**0.5 + h
+            array_to_project[num_spanwise_half:, 1] = interp_y_2
+            array_to_project[num_spanwise_half:, 2] = fz(interp_y_2)
+
+            TE_points = array_to_project
+
+        else:
+            TE_points_1 = cosine_spacing(num_spanwise_half + 1, np.linspace(TE_mid_point, TE_left_point, num_spanwise_half + 1))
+            TE_points_2 = cosine_spacing(num_spanwise_half + 1, np.linspace(TE_mid_point, TE_right_point, num_spanwise_half + 1), flip=True)
+            TE_points = np.vstack((TE_points_1, TE_points_2[1:, :]))
+    
+    else:
+        raise NotImplementedError
+
+    LE_points_para = wing_geometry.project(LE_points, plot=plot)
+    TE_points_para = wing_geometry.project(TE_points, plot=plot)
+
+    LE_points_csdl = wing_geometry.evaluate(LE_points_para)
+    TE_points_csdl = wing_geometry.evaluate(TE_points_para)
+    
+    y_mean_spanwise = (LE_points_csdl[:, 1] + TE_points_csdl[:, 1])/ 2 
+    LE_points_csdl = LE_points_csdl.set(csdl.slice[:, 1], y_mean_spanwise)
+    TE_points_csdl = TE_points_csdl.set(csdl.slice[:, 1], y_mean_spanwise)
+
+    
+
+    if spacing_chordwise == "linear":
+        chord_surface = csdl.linear_combination(LE_points_csdl, TE_points_csdl, num_chordwise+1).reshape((num_chordwise+1, num_spanwise+1, 3))
+    
+    elif spacing_chordwise == "cosine":
+        # chord_surface = csdl.linear_combination(TE_points_csdl, LE_points_csdl, num_chordwise+1).reshape((-1, 3))
+        chord_surface = cosine_spacing(
+            num_spanwise, 
+            None,
+            csdl.linear_combination(LE_points_csdl, TE_points_csdl, num_chordwise+1),
+            num_chordwise
+        )
+
+    chord_surface = chord_surface.reshape((num_chordwise+1, num_spanwise+1, 3))
+
+    vertical_offset_1 = csdl.expand(
+        csdl.Variable(shape=(3, ), value=np.array([0., 0., 0.25])),
+        chord_surface.shape, action='k->ijk'
+    )
+
+    upper_surace_wireframe_para = wing_geometry.project(
+        chord_surface - vertical_offset_1, 
+        direction=np.array([0., 0., 1.]), 
+        plot=plot, 
+        grid_search_density_parameter=grid_search_density
+    )
+
+    lower_surace_wireframe_para = wing_geometry.project(
+        chord_surface + vertical_offset_1, 
+        direction=np.array([0., 0., -1]), 
+        plot=plot, 
+        grid_search_density_parameter=grid_search_density,
+    )
+
+    # for rotor blades, change direction to [1.,0.,0.]
+    upper_surace_wireframe = wing_geometry.evaluate(upper_surace_wireframe_para).reshape((num_chordwise + 1, num_spanwise + 1, 3))
+    lower_surace_wireframe = wing_geometry.evaluate(lower_surace_wireframe_para).reshape((num_chordwise + 1, num_spanwise + 1, 3))
+
+    lower_surace_wireframe_reversed = lower_surace_wireframe[::-1,:,:][:-1,:,:]
+    panel_wireframe = csdl.Variable(shape=(2 * num_chordwise + 1, num_spanwise + 1, 3), value=0.)
+
+    # print("upper", upper_surace_wireframe.shape)
+    # print("lower", lower_surace_wireframe_reversed.shape)
+    # print("panel", panel_wireframe.shape)
+
+    panel_wireframe = panel_wireframe.set(csdl.slice[:(num_chordwise),:,:], value=lower_surace_wireframe_reversed)
+    panel_wireframe = panel_wireframe.set(csdl.slice[(num_chordwise):,:,:], value=upper_surace_wireframe)
+
+    #     # compute the camber surface as the mean of the upper and lower wireframe
+    #     camber_surface_raw = (upper_surace_wireframe + lower_surace_wireframe) / 2
+
+    # Ensure that the mesh is symmetric across the xz-plane
+    panel_surface = make_mesh_symmetric(panel_wireframe, num_spanwise, spanwise_index=1)
+
+    wing_panel_mesh = PanelDiscretization(
+        nodal_coordinates=panel_surface,
+    )
+    
+    wing_comp._discretizations[f"{wing_comp._name}_panel_mesh"] = wing_panel_mesh
+
+    return wing_panel_mesh
+
+def make_nacelle_panel_mesh(
+    nacelle_geometry,
+    body_id: list,
+    tip_id: list,
+    grid_nr: int,
+    grid_nl_body: int, 
+    grid_nl_tip: int,
+    plot: bool = False,
+) -> PanelMesh:
+    
+    surfaces = nacelle_geometry.functions
+    nacelle_meshes_raw = []
+    i = 0
+
+    for surface in surfaces.values():
+        i += 1
+        if i in tip_id:
+            parametric_mesh_i = surface.space.generate_parametric_grid(grid_resolution=(grid_nl_tip,grid_nr))
+            nacelle_mesh_i = surface.evaluate(parametric_mesh_i, plot=plot).reshape((grid_nl_tip,grid_nr,3))
+        else:
+            parametric_mesh_i = surface.space.generate_parametric_grid(grid_resolution=(grid_nl_body,grid_nr))
+            nacelle_mesh_i = surface.evaluate(parametric_mesh_i, plot=plot).reshape((grid_nl_body,grid_nr,3))
+        if plot:
+            nacelle_geometry.plot_meshes(nacelle_mesh_i)
+        nacelle_meshes_raw.append(nacelle_mesh_i)
+    
+    
+    body_mesh_1 = nacelle_meshes_raw[body_id[0]-1]
+    body_mesh_2 = nacelle_meshes_raw[body_id[1]-1]
+    body_mesh_3 = nacelle_meshes_raw[body_id[2]-1]
+    body_mesh_4 = nacelle_meshes_raw[body_id[3]-1]
+    tip_mesh_1 = nacelle_meshes_raw[tip_id[0]-1]
+    tip_mesh_2 = nacelle_meshes_raw[tip_id[1]-1]
+    tip_mesh_3 = nacelle_meshes_raw[tip_id[2]-1]
+    tip_mesh_4 = nacelle_meshes_raw[tip_id[3]-1]
+
+    upper_body_mesh = csdl.Variable(shape=(grid_nl_body, 2 * grid_nr - 1, 3), value=0.)
+    upper_body_mesh = upper_body_mesh.set(csdl.slice[:,:grid_nr,:], value=body_mesh_1[:,:,:][:,::-1,:])
+    upper_body_mesh = upper_body_mesh.set(csdl.slice[:,grid_nr:,:], value=body_mesh_2[:,:-1,:][:,::-1,:])
+
+    lower_body_mesh = csdl.Variable(shape=(grid_nl_body, 2 * grid_nr - 1, 3), value=0.)
+    lower_body_mesh = lower_body_mesh.set(csdl.slice[:,:grid_nr,:], value=body_mesh_3[:,:,:][:,::-1,:])
+    lower_body_mesh = lower_body_mesh.set(csdl.slice[:,grid_nr:,:], value=body_mesh_4[:,:-1,:][:,::-1,:])
+
+    body_mesh = csdl.Variable(shape=(grid_nl_body, 4 * grid_nr - 3, 3), value=0.)
+    body_mesh = body_mesh.set(csdl.slice[:,:(2*grid_nr-1),:], value=upper_body_mesh[:,:,:][:,::-1,:])
+    body_mesh = body_mesh.set(csdl.slice[:,(2*grid_nr-1):,:], value=lower_body_mesh[:,:-1,:][:,::-1,:])
+
+    # nacelle_geometry.plot_meshes(body_mesh)
+
+    upper_tip_mesh = csdl.Variable(shape=(grid_nl_tip, 2 * grid_nr - 1, 3), value=0.)
+    upper_tip_mesh = upper_tip_mesh.set(csdl.slice[:,:grid_nr,:], value=tip_mesh_1[:,:,:][:,::-1,:])
+    upper_tip_mesh = upper_tip_mesh.set(csdl.slice[:,grid_nr:,:], value=tip_mesh_2[:,:-1,:][:,::-1,:])
+
+    lower_tip_mesh = csdl.Variable(shape=(grid_nl_tip, 2 * grid_nr - 1, 3), value=0.)
+    lower_tip_mesh = lower_tip_mesh.set(csdl.slice[:,:grid_nr,:], value=tip_mesh_3[:,:,:][:,::-1,:])
+    lower_tip_mesh = lower_tip_mesh.set(csdl.slice[:,grid_nr:,:], value=tip_mesh_4[:,:-1,:][:,::-1,:])
+
+    tip_mesh = csdl.Variable(shape=(grid_nl_tip, 4 * grid_nr - 3, 3), value=0.)
+    tip_mesh = tip_mesh.set(csdl.slice[:,:(2*grid_nr-1),:], value=upper_tip_mesh[:,:,:][:,::-1,:])
+    tip_mesh = tip_mesh.set(csdl.slice[:,(2*grid_nr-1):,:], value=lower_tip_mesh[:,:-1,:][:,::-1,:])
+
+    # nacelle_geometry.plot_meshes(tip_mesh)
+
+    nacelle_mesh = csdl.Variable(shape=(grid_nl_body+grid_nl_tip-1, 4 * grid_nr - 3, 3), value=0.)
+    nacelle_mesh = nacelle_mesh.set(csdl.slice[:grid_nl_body,:,:], value=body_mesh[:,:,:][::-1,:,:])
+    nacelle_mesh = nacelle_mesh.set(csdl.slice[grid_nl_body:,:,:], value=tip_mesh[:-1,:,:][::-1,:,:])
+
+    if plot:
+        nacelle_geometry.plot_meshes(nacelle_mesh)
+    
+    nacelle_panel_mesh = PanelDiscretization(
+        nodal_coordinates=nacelle_mesh,
+    )
+    
+    return nacelle_panel_mesh
+
+
+def make_rotor_panel_mesh(
+    rotor_geometry,
+    blade_keys: list,
+    grid_nr: int,
+    grid_nl: int, 
+    plot: bool = False,
+) -> PanelMesh:
+    
+    surfaces = rotor_geometry.functions
+
+    num_blades = int(len(surfaces.keys())/2)
+
+    blade_meshes = csdl.Variable(shape=(grid_nl, num_blades*(2*grid_nr-1), 3), 
+                                      value=0.)
+
+    for i in range(num_blades):
+        lower_surface_i = surfaces[blade_keys[2*i]]
+        upper_surface_i = surfaces[blade_keys[2*i+1]]
+        lower_parametric_mesh_i = lower_surface_i.space.generate_parametric_grid(grid_resolution=(grid_nl,grid_nr))
+        lower_blade_mesh_i = lower_surface_i.evaluate(lower_parametric_mesh_i, plot=plot).reshape((grid_nl,grid_nr,3))
+        upper_parametric_mesh_i = upper_surface_i.space.generate_parametric_grid(grid_resolution=(grid_nl,grid_nr))
+        upper_blade_mesh_i = upper_surface_i.evaluate(upper_parametric_mesh_i, plot=plot).reshape((grid_nl,grid_nr,3))
+        
+        blade_mesh_i = csdl.Variable(shape=(grid_nl, 2 * grid_nr - 1, 3), value=0.)
+        blade_mesh_i = blade_mesh_i.set(csdl.slice[:,:grid_nr,:], value=lower_blade_mesh_i[:,:,:][:,::-1,:])
+        blade_mesh_i = blade_mesh_i.set(csdl.slice[:,grid_nr:,:], value=upper_blade_mesh_i[:,:-1,:][:,::-1,:])
+
+        if plot:
+            rotor_geometry.plot_meshes(blade_mesh_i)
+
+        blade_meshes = blade_meshes.set(csdl.slice[:,i*(2*grid_nr-1):(i+1)*(2*grid_nr-1),:], value=blade_mesh_i)
+
+    blade_panel_mesh = PanelDiscretization(
+        nodal_coordinates=blade_meshes,
+    )
+    
+    return blade_panel_mesh
 
 @dataclass
 class OneDBoxBeam(Discretization):

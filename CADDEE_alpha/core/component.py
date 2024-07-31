@@ -314,19 +314,28 @@ class Component:
         if geometry is not None and isinstance(geometry, FunctionSet):
             if self.compute_surface_area:
                 self.quantities.surface_area = self._compute_surface_area(geometry=geometry)
-            if "do_not_remake_ffd_block" in kwargs.keys():
-                pass
-            else:
-                self._ffd_block = self._make_ffd_block(self.geometry)
+            # if "do_not_remake_ffd_block" in kwargs.keys():
+            #     pass
+            # else:
+                # self._ffd_block = self._make_ffd_block(self.geometry)
 
-                self.ffd_block_face_1 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0.5, 0.]))
-                self.ffd_block_face_2 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0.5, 1.]))
-                self.ffd_block_face_3 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0., 0.5]))
-                self.ffd_block_face_4 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 1., 0.5]))
-                self.ffd_block_face_5 = self._ffd_block.evaluate(parametric_coordinates=np.array([0., 0.5, 0.5]))
-                self.ffd_block_face_6 = self._ffd_block.evaluate(parametric_coordinates=np.array([1., 0.5, 0.5]))
-                self.ffd_block_center = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0.5, 0.5]))
-    
+                # self.ffd_block_face_1 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0.5, 0.]))
+                # self.ffd_block_face_2 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0.5, 1.]))
+                # self.ffd_block_face_3 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0., 0.5]))
+                # self.ffd_block_face_4 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 1., 0.5]))
+                # self.ffd_block_face_5 = self._ffd_block.evaluate(parametric_coordinates=np.array([0., 0.5, 0.5]))
+                # self.ffd_block_face_6 = self._ffd_block.evaluate(parametric_coordinates=np.array([1., 0.5, 0.5]))
+                # self.ffd_block_center = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0.5, 0.5]))
+            self._ffd_block = self._make_ffd_block(self.geometry)
+
+            self.ffd_block_face_1 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0.5, 0.]))
+            self.ffd_block_face_2 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0.5, 1.]))
+            self.ffd_block_face_3 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0., 0.5]))
+            self.ffd_block_face_4 = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 1., 0.5]))
+            self.ffd_block_face_5 = self._ffd_block.evaluate(parametric_coordinates=np.array([0., 0.5, 0.5]))
+            self.ffd_block_face_6 = self._ffd_block.evaluate(parametric_coordinates=np.array([1., 0.5, 0.5]))
+            self.ffd_block_center = self._ffd_block.evaluate(parametric_coordinates=np.array([0.5, 0.5, 0.5]))
+
     def create_subgeometry(self, search_names:list[str], ignore_names:list[str]=[]) -> FunctionSet:
         """Create a sub-geometry by providing the search names of the e.g., OpenVSP component.
         
@@ -417,6 +426,10 @@ class Component:
         parametric_mesh = geometry.generate_parametric_grid(grid_resolution=(parametric_mesh_grid_num, parametric_mesh_grid_num))
         coords_vec = geometry.evaluate(parametric_mesh).reshape((num_surfaces, parametric_mesh_grid_num, parametric_mesh_grid_num, 3))
         surface_mesh.append(coords_vec)
+
+        # #########################
+        # self.geometry.plot_meshes(surface_mesh)
+        # #########################
 
         coords_u_end = coords_vec[:, 1:, :, :].reshape((num_surfaces, parametric_mesh_grid_num-1, parametric_mesh_grid_num, 3))
         coords_u_start = coords_vec[:, :-1, :, :].reshape((num_surfaces, parametric_mesh_grid_num-1, parametric_mesh_grid_num, 3))
