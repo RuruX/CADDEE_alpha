@@ -806,6 +806,8 @@ def make_wing_panel_mesh(
 
     wing_geometry: FunctionSet = wing_comp.geometry
 
+    # TODO: find the physical coordinates of LE/TE endpoints from OpenVSP
+    # TODO: talk to Josh on his status of rotor meshing
     LE_left_point = wing_geometry.evaluate(wing_comp._LE_left_point).value
     LE_mid_point = wing_geometry.evaluate(wing_comp._LE_mid_point).value
     LE_right_point = wing_geometry.evaluate(wing_comp._LE_right_point).value
@@ -1038,8 +1040,9 @@ def make_nacelle_panel_mesh(
             parametric_mesh_i = surface.space.generate_parametric_grid(grid_resolution=(grid_nl_tip,grid_nr))
             nacelle_mesh_i = surface.evaluate(parametric_mesh_i, plot=plot).reshape((grid_nl_tip,grid_nr,3))
         else:
-            parametric_mesh_i = surface.space.generate_parametric_grid(grid_resolution=(grid_nl_body,grid_nr))
-            nacelle_mesh_i = surface.evaluate(parametric_mesh_i, plot=plot).reshape((grid_nl_body,grid_nr,3))
+            parametric_mesh_i = surface.space.generate_parametric_grid(grid_resolution=(grid_nl_body+1,grid_nr))
+            nacelle_mesh_i = surface.evaluate(parametric_mesh_i, plot=plot).reshape((grid_nl_body+1,grid_nr,3))
+            nacelle_mesh_i = nacelle_mesh_i[:-1,:,:]
         if plot:
             nacelle_geometry.plot_meshes(nacelle_mesh_i)
         nacelle_meshes_raw.append(nacelle_mesh_i)
@@ -1083,20 +1086,231 @@ def make_nacelle_panel_mesh(
     # nacelle_geometry.plot_meshes(tip_mesh)
 
     nacelle_mesh = csdl.Variable(shape=(grid_nl_body+grid_nl_tip-1, 4 * grid_nr - 3, 3), value=0.)
-    nacelle_mesh = nacelle_mesh.set(csdl.slice[:grid_nl_body,:,:], value=body_mesh[:,:,:][::-1,:,:])
-    nacelle_mesh = nacelle_mesh.set(csdl.slice[grid_nl_body:,:,:], value=tip_mesh[:-1,:,:][::-1,:,:])
-
+    nacelle_mesh = nacelle_mesh.set(csdl.slice[:grid_nl_tip-1,:,:], value=tip_mesh[:-1,:,:])
+    nacelle_mesh = nacelle_mesh.set(csdl.slice[grid_nl_tip-1:,:,:], value=body_mesh[:,:,:])
     if plot:
         nacelle_geometry.plot_meshes(nacelle_mesh)
-    
     nacelle_panel_mesh = PanelDiscretization(
         nodal_coordinates=nacelle_mesh,
     )
     
     return nacelle_panel_mesh
 
-
 def make_rotor_panel_mesh(
+    rotor_geometry,
+    blade_keys: list,
+    grid_nr: int,
+    grid_nl: int, 
+    plot: bool = False,
+) -> PanelMesh:
+    
+    surfaces = rotor_geometry.functions
+
+    lower_surface = surfaces[blade_keys[0]]
+    upper_surface = surfaces[blade_keys[1]]
+    lower_parametric_mesh = lower_surface.space.generate_parametric_grid(grid_resolution=(grid_nl, grid_nr))
+    lower_blade_mesh = lower_surface.evaluate(lower_parametric_mesh, plot=plot).reshape((grid_nl, grid_nr, 3))
+    upper_parametric_mesh = upper_surface.space.generate_parametric_grid(grid_resolution=(grid_nl, grid_nr))
+    upper_blade_mesh = upper_surface.evaluate(upper_parametric_mesh, plot=plot).reshape((grid_nl, grid_nr,3))
+    
+    upper_blade_mesh = csdl.einsum(upper_blade_mesh, action='ijk->jik')
+    lower_blade_mesh = csdl.einsum(lower_blade_mesh, action='ijk->jik')
+
+    blade_mesh = csdl.Variable(shape=(2 * grid_nr - 1, grid_nl, 3), value=0.)
+    blade_mesh = blade_mesh.set(csdl.slice[:grid_nr,:,:], value=lower_blade_mesh[::-1,:,:][:,:,:])
+    blade_mesh = blade_mesh.set(csdl.slice[grid_nr:,:,:], value=upper_blade_mesh[::-1,:,:][:-1,:,:])
+
+    if plot:
+        rotor_geometry.plot_meshes(blade_mesh)
+
+    blade_panel_mesh = PanelDiscretization(
+        nodal_coordinates=blade_mesh,
+    )
+    
+    return blade_panel_mesh
+
+def make_blade_panel_mesh(
+    blade_geometry,
+    num_spanwise: int,
+    num_chordwise: int, 
+    spacing_spanwise: str = 'linear',
+    spacing_chordwise: str = 'linear',
+    chord_wise_points_for_airfoil = None,
+    ignore_camber: bool = False, 
+    surface_id: list = None,
+    plot: bool = False,
+    grid_search_density: int = 10,
+    LE_interp : Union[str, None] = None,
+    TE_interp : Union[str, None] = None,
+) -> PanelMesh:
+    """Make a panel mesh for wing-like components. This method is NOT 
+    intended for vertically oriented lifting surfaces like a vertical tail.
+
+    Parameters
+    ----------
+    blade_geometry : Blade
+        instance of a 'Blade' geometry
+    
+    num_spanwise : int
+        number of span-wise panels (note that if odd, 
+        central panel will be larger)
+    
+    num_chordwise : int
+        number of chord-wise panels
+    
+    spacing_spanwise : str, optional
+        spacing of the span-wise panels (linear or cosine 
+        currently supported), by default 'linear'
+    
+    spacing_chordwise : str, optional
+        spacing of the chord-wise panels (linear or cosine 
+        currently supported), by default 'linear'
+    
+    plot : bool, optional
+        plot the projections, by default False
+    
+    grid_search_density : int, optional
+        parameter to refine the quality of projections (note that the higher this parameter 
+        the longer the projections will take; for finer meshes, especially with cosine 
+        spacing, a value of 40-50 is recommended), by default 10
+
+    Returns
+    -------
+    blade_panel_mesh: csdl.VariableGroup
+        data class storing the mesh coordinates and mesh velocities (latter will be set later)
+
+    """
+    csdl.check_parameter(num_spanwise, "num_spanwise", types=int)
+    csdl.check_parameter(num_chordwise, "num_chordwise", types=int)
+    csdl.check_parameter(spacing_spanwise, "spacing_spanwise", values=("linear", "cosine"))
+    csdl.check_parameter(spacing_chordwise, "spacing_chordwise", values=("linear", "cosine"))
+    csdl.check_parameter(plot, "plot", types=bool)
+    csdl.check_parameter(grid_search_density, "grid_search_density", types=int)
+    csdl.check_parameter(ignore_camber, "ignore_camber", types=bool)
+    csdl.check_parameter(LE_interp, "LE_interp", values=("ellipse", None))
+    csdl.check_parameter(TE_interp, "TE_interp", values=("ellipse", None))
+
+    if blade_geometry is None:
+        raise Exception("Cannot generate mesh for component with geoemetry=None")
+
+    if num_spanwise % 2 != 0:
+        raise Exception("Number of spanwise panels must be even.")
+
+    surfaces = blade_geometry.functions
+    print("surfaces:",surfaces.values())
+
+    LE_base_point_para = np.array([0.,0.])
+    LE_tip_point_para = np.array([1.,0.])
+    TE_base_point_para = np.array([0.,1.])
+    TE_tip_point_para = np.array([1.,1.])
+
+    LE_base_point = blade_geometry.evaluate([(surface_id[0], LE_base_point_para)], plot=False).value
+    LE_tip_point = blade_geometry.evaluate([(surface_id[0], LE_tip_point_para)], plot=False).value
+    TE_base_point = blade_geometry.evaluate([(surface_id[0], TE_base_point_para)], plot=False).value
+    TE_tip_point = blade_geometry.evaluate([(surface_id[0], TE_tip_point_para)], plot=False).value
+
+    print("physical coordinates:")
+    print(LE_base_point, LE_tip_point, TE_base_point, TE_tip_point)
+    # blade_geometry.plot_meshes(np.array([LE_base_point, LE_tip_point, TE_base_point, TE_tip_point]))
+
+    # LE_points_para = blade_geometry.project(LE_points, plot=plot)
+    # TE_points_para = blade_geometry.project(TE_points, plot=plot)
+
+    # LE_points_csdl = blade_geometry.evaluate(LE_points_para)
+    # TE_points_csdl = blade_geometry.evaluate(TE_points_para)
+
+    LE_points_para = np.linspace(LE_base_point_para, LE_tip_point_para, num_spanwise + 1)
+    TE_points_para = np.linspace(TE_base_point_para, TE_tip_point_para, num_spanwise + 1)
+    LE_points_para_list = []
+    TE_points_para_list = []
+    for i in range(num_spanwise + 1):
+        LE_points_para_list.append((surface_id[0], LE_points_para[i]))
+        TE_points_para_list.append((surface_id[0], TE_points_para[i]))
+
+    LE_points_csdl = blade_geometry.evaluate(LE_points_para_list, plot=True)
+    TE_points_csdl = blade_geometry.evaluate(TE_points_para_list, plot=True)
+    
+    # y_mean_spanwise = (LE_points_csdl[:, 1] + TE_points_csdl[:, 1])/ 2 
+    # LE_points_csdl = LE_points_csdl.set(csdl.slice[:, 1], y_mean_spanwise)
+    # TE_points_csdl = TE_points_csdl.set(csdl.slice[:, 1], y_mean_spanwise)
+
+    
+
+    if spacing_chordwise == "linear":
+        chord_surface = csdl.linear_combination(LE_points_csdl, TE_points_csdl, num_chordwise+1).reshape((num_chordwise+1, num_spanwise+1, 3))
+    
+    elif spacing_chordwise == "cosine":
+        # chord_surface = csdl.linear_combination(TE_points_csdl, LE_points_csdl, num_chordwise+1).reshape((-1, 3))
+        chord_surface = cosine_spacing(
+            num_spanwise, 
+            None,
+            csdl.linear_combination(LE_points_csdl, TE_points_csdl, num_chordwise+1),
+            num_chordwise
+        )
+
+    else:
+        raise NotImplementedError
+    
+    chord_surface = chord_surface.reshape((num_chordwise+1, num_spanwise+1, 3))
+
+    # vertical_offset_1 = csdl.expand(
+    #     csdl.Variable(shape=(3, ), value=np.array([0.25, 0., 0.])),
+    #     chord_surface.shape, action='k->ijk'
+    # )
+
+    # upper_surace_wireframe_para = blade_geometry.project(
+    #     chord_surface - vertical_offset_1, 
+    #     direction=np.array([1., 0., 0.]), 
+    #     plot=plot, 
+    #     grid_search_density_parameter=grid_search_density
+    # )
+
+    # lower_surace_wireframe_para = blade_geometry.project(
+    #     chord_surface + vertical_offset_1, 
+    #     direction=np.array([-1., 0., 0.]), 
+    #     plot=plot, 
+    #     grid_search_density_parameter=grid_search_density,
+    # )
+    upper_surace_wireframe_para = csdl.linear_combination(LE_points_para, TE_points_para, num_chordwise+1).reshape((num_chordwise+1, num_spanwise+1, 3))
+    upper_surace_wireframe_para_list = []
+    lower_surace_wireframe_para_list = []
+    for i in range(num_chordwise + 1):
+        upper_surace_wireframe_para_list.append((surface_id[0], upper_surace_wireframe_para[i]))
+        lower_surace_wireframe_para_list.append((surface_id[1], upper_surace_wireframe_para[i]))
+
+    # for rotor blades, change direction to [1.,0.,0.]
+    upper_surace_wireframe = blade_geometry.evaluate(upper_surace_wireframe_para_list).reshape((num_chordwise + 1, num_spanwise + 1, 3))
+    lower_surace_wireframe = blade_geometry.evaluate(lower_surace_wireframe_para_list).reshape((num_chordwise + 1, num_spanwise + 1, 3))
+
+    blade_geometry.plot_meshes(upper_surace_wireframe)
+    blade_geometry.plot_meshes(lower_surace_wireframe)
+
+    lower_surace_wireframe_reversed = lower_surace_wireframe[::-1,:,:][:-1,:,:]
+    panel_wireframe = csdl.Variable(shape=(2 * num_chordwise + 1, num_spanwise + 1, 3), value=0.)
+
+    # print("upper", upper_surace_wireframe.shape)
+    # print("lower", lower_surace_wireframe_reversed.shape)
+    # print("panel", panel_wireframe.shape)
+
+    panel_wireframe = panel_wireframe.set(csdl.slice[:(num_chordwise),:,:], value=lower_surace_wireframe_reversed)
+    panel_wireframe = panel_wireframe.set(csdl.slice[(num_chordwise):,:,:], value=upper_surace_wireframe)
+
+    #     # compute the camber surface as the mean of the upper and lower wireframe
+    #     camber_surface_raw = (upper_surace_wireframe + lower_surace_wireframe) / 2
+
+    # # Ensure that the mesh is symmetric across the xz-plane
+    # panel_surface = make_mesh_symmetric(panel_wireframe, num_spanwise, spanwise_index=1)
+
+    blade_panel_mesh = PanelDiscretization(
+        nodal_coordinates=panel_wireframe,
+    )
+    
+    blade_comp._discretizations[f"{blade_comp._name}_panel_mesh"] = blade_panel_mesh
+
+    return blade_panel_mesh
+
+
+def make_rotor_panel_mesh_grid(
     rotor_geometry,
     blade_keys: list,
     grid_nr: int,
