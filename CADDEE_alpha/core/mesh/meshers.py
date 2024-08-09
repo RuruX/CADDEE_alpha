@@ -1040,56 +1040,69 @@ def make_nacelle_panel_mesh(
             parametric_mesh_i = surface.space.generate_parametric_grid(grid_resolution=(grid_nl_tip,grid_nr))
             nacelle_mesh_i = surface.evaluate(parametric_mesh_i, plot=plot).reshape((grid_nl_tip,grid_nr,3))
         else:
-            parametric_mesh_i = surface.space.generate_parametric_grid(grid_resolution=(grid_nl_body+1,grid_nr))
-            nacelle_mesh_i = surface.evaluate(parametric_mesh_i, plot=plot).reshape((grid_nl_body+1,grid_nr,3))
-            nacelle_mesh_i = nacelle_mesh_i[:-1,:,:]
+            parametric_mesh_i = surface.space.generate_parametric_grid(grid_resolution=(grid_nl_body,grid_nr))
+            parametric_mesh_i = parametric_mesh_i.reshape((grid_nl_body,grid_nr,2))
+            
+            # Make the TE mesh as a line instead of a point
+            if i % 2 == 0:
+                parametric_mesh_i[-1,:,0] = np.linspace(parametric_mesh_i[-2,0,0], parametric_mesh_i[-1,0,0], grid_nr)
+                parametric_mesh_i[-1,:,1] = np.zeros(grid_nr)
+            else:
+                parametric_mesh_i[-1,:,0] = np.linspace(parametric_mesh_i[-1,0,0], parametric_mesh_i[-2,0,0], grid_nr)
+                parametric_mesh_i[-1,:,1] = np.ones(grid_nr)
+
+            nacelle_mesh_i = surface.evaluate(parametric_mesh_i, plot=plot).reshape((grid_nl_body,grid_nr,3))
+
         if plot:
             nacelle_geometry.plot_meshes(nacelle_mesh_i)
         nacelle_meshes_raw.append(nacelle_mesh_i)
     
     
-    body_mesh_1 = nacelle_meshes_raw[body_id[0]-1]
-    body_mesh_2 = nacelle_meshes_raw[body_id[1]-1]
-    body_mesh_3 = nacelle_meshes_raw[body_id[2]-1]
-    body_mesh_4 = nacelle_meshes_raw[body_id[3]-1]
+    body_mesh_1 = nacelle_meshes_raw[body_id[0]-1] # lower left
+    body_mesh_2 = nacelle_meshes_raw[body_id[1]-1] # lower right
+    body_mesh_3 = nacelle_meshes_raw[body_id[2]-1] # upper left
+    body_mesh_4 = nacelle_meshes_raw[body_id[3]-1] # upper right
     tip_mesh_1 = nacelle_meshes_raw[tip_id[0]-1]
     tip_mesh_2 = nacelle_meshes_raw[tip_id[1]-1]
     tip_mesh_3 = nacelle_meshes_raw[tip_id[2]-1]
     tip_mesh_4 = nacelle_meshes_raw[tip_id[3]-1]
 
     upper_body_mesh = csdl.Variable(shape=(grid_nl_body, 2 * grid_nr - 1, 3), value=0.)
-    upper_body_mesh = upper_body_mesh.set(csdl.slice[:,:grid_nr,:], value=body_mesh_1[:,:,:][:,::-1,:])
-    upper_body_mesh = upper_body_mesh.set(csdl.slice[:,grid_nr:,:], value=body_mesh_2[:,:-1,:][:,::-1,:])
-
-    lower_body_mesh = csdl.Variable(shape=(grid_nl_body, 2 * grid_nr - 1, 3), value=0.)
-    lower_body_mesh = lower_body_mesh.set(csdl.slice[:,:grid_nr,:], value=body_mesh_3[:,:,:][:,::-1,:])
-    lower_body_mesh = lower_body_mesh.set(csdl.slice[:,grid_nr:,:], value=body_mesh_4[:,:-1,:][:,::-1,:])
-
-    body_mesh = csdl.Variable(shape=(grid_nl_body, 4 * grid_nr - 3, 3), value=0.)
-    body_mesh = body_mesh.set(csdl.slice[:,:(2*grid_nr-1),:], value=upper_body_mesh[:,:,:][:,::-1,:])
-    body_mesh = body_mesh.set(csdl.slice[:,(2*grid_nr-1):,:], value=lower_body_mesh[:,:-1,:][:,::-1,:])
-
-    # nacelle_geometry.plot_meshes(body_mesh)
+    upper_body_mesh = upper_body_mesh.set(csdl.slice[:,:grid_nr,:], value=body_mesh_3[:,:,:][:,::-1,:])
+    upper_body_mesh = upper_body_mesh.set(csdl.slice[:,grid_nr:,:], value=body_mesh_4[:,:-1,:][:,::-1,:])
 
     upper_tip_mesh = csdl.Variable(shape=(grid_nl_tip, 2 * grid_nr - 1, 3), value=0.)
-    upper_tip_mesh = upper_tip_mesh.set(csdl.slice[:,:grid_nr,:], value=tip_mesh_1[:,:,:][:,::-1,:])
-    upper_tip_mesh = upper_tip_mesh.set(csdl.slice[:,grid_nr:,:], value=tip_mesh_2[:,:-1,:][:,::-1,:])
+    upper_tip_mesh = upper_tip_mesh.set(csdl.slice[:,:grid_nr,:], value=tip_mesh_3[:,:,:][:,::-1,:])
+    upper_tip_mesh = upper_tip_mesh.set(csdl.slice[:,grid_nr:,:], value=tip_mesh_4[:,:-1,:][:,::-1,:])
+
+    upper_surface_mesh = csdl.Variable(shape=(grid_nl_tip + grid_nl_body - 1, 2 * grid_nr - 1, 3), value=0.)
+    upper_surface_mesh = upper_surface_mesh.set(csdl.slice[:(grid_nl_body-1),:,:], value=upper_body_mesh[::-1,:,:][:-1,:,:])
+    upper_surface_mesh = upper_surface_mesh.set(csdl.slice[(grid_nl_body-1):,:,:], value=upper_tip_mesh[::-1,:,:])
+    
+    lower_body_mesh = csdl.Variable(shape=(grid_nl_body, 2 * grid_nr - 1, 3), value=0.)
+    lower_body_mesh = lower_body_mesh.set(csdl.slice[:,:grid_nr,:], value=body_mesh_1[:,:,:][:,::-1,:])
+    lower_body_mesh = lower_body_mesh.set(csdl.slice[:,grid_nr:,:], value=body_mesh_2[:,:-1,:][:,::-1,:])
 
     lower_tip_mesh = csdl.Variable(shape=(grid_nl_tip, 2 * grid_nr - 1, 3), value=0.)
-    lower_tip_mesh = lower_tip_mesh.set(csdl.slice[:,:grid_nr,:], value=tip_mesh_3[:,:,:][:,::-1,:])
-    lower_tip_mesh = lower_tip_mesh.set(csdl.slice[:,grid_nr:,:], value=tip_mesh_4[:,:-1,:][:,::-1,:])
+    lower_tip_mesh = lower_tip_mesh.set(csdl.slice[:,:grid_nr,:], value=tip_mesh_1[:,:,:][:,::-1,:])
+    lower_tip_mesh = lower_tip_mesh.set(csdl.slice[:,grid_nr:,:], value=tip_mesh_2[:,:-1,:][:,::-1,:])
 
-    tip_mesh = csdl.Variable(shape=(grid_nl_tip, 4 * grid_nr - 3, 3), value=0.)
-    tip_mesh = tip_mesh.set(csdl.slice[:,:(2*grid_nr-1),:], value=upper_tip_mesh[:,:,:][:,::-1,:])
-    tip_mesh = tip_mesh.set(csdl.slice[:,(2*grid_nr-1):,:], value=lower_tip_mesh[:,:-1,:][:,::-1,:])
 
-    # nacelle_geometry.plot_meshes(tip_mesh)
+    lower_surface_mesh = csdl.Variable(shape=(grid_nl_tip + grid_nl_body - 1, 2 * grid_nr - 1, 3), value=0.)
+    lower_surface_mesh = lower_surface_mesh.set(csdl.slice[:grid_nl_tip,:,:], value=lower_tip_mesh)
+    lower_surface_mesh = lower_surface_mesh.set(csdl.slice[grid_nl_tip:,:,:], value=lower_body_mesh[1:,:,:])
 
-    nacelle_mesh = csdl.Variable(shape=(grid_nl_body+grid_nl_tip-1, 4 * grid_nr - 3, 3), value=0.)
-    nacelle_mesh = nacelle_mesh.set(csdl.slice[:grid_nl_tip-1,:,:], value=tip_mesh[:-1,:,:])
-    nacelle_mesh = nacelle_mesh.set(csdl.slice[grid_nl_tip-1:,:,:], value=body_mesh[:,:,:])
+    nacelle_mesh = csdl.Variable(shape=(2*(grid_nl_body+grid_nl_tip)-3, 2 * grid_nr - 1, 3), value=0.)
+    nacelle_mesh = nacelle_mesh.set(csdl.slice[:grid_nl_tip + grid_nl_body - 2,:,:], value=upper_surface_mesh[:-1,:,:])
+    nacelle_mesh = nacelle_mesh.set(csdl.slice[grid_nl_tip + grid_nl_body - 2:,:,:], value=lower_surface_mesh[:,::-1,:])
+
     if plot:
+        nacelle_geometry.plot_meshes(upper_surface_mesh)
+        nacelle_geometry.plot_meshes(lower_surface_mesh)
         nacelle_geometry.plot_meshes(nacelle_mesh)
+        print("First row of nodes on the nacelle:", nacelle_mesh.value[0,:,:])
+        print("Last row of nodes on the nacelle:", nacelle_mesh.value[-1,:,:])
+
     nacelle_panel_mesh = PanelDiscretization(
         nodal_coordinates=nacelle_mesh,
     )
@@ -1112,13 +1125,13 @@ def make_rotor_panel_mesh(
     lower_blade_mesh = lower_surface.evaluate(lower_parametric_mesh, plot=plot).reshape((grid_nl, grid_nr, 3))
     upper_parametric_mesh = upper_surface.space.generate_parametric_grid(grid_resolution=(grid_nl, grid_nr))
     upper_blade_mesh = upper_surface.evaluate(upper_parametric_mesh, plot=plot).reshape((grid_nl, grid_nr,3))
-    
+
     upper_blade_mesh = csdl.einsum(upper_blade_mesh, action='ijk->jik')
     lower_blade_mesh = csdl.einsum(lower_blade_mesh, action='ijk->jik')
 
     blade_mesh = csdl.Variable(shape=(2 * grid_nr - 1, grid_nl, 3), value=0.)
     blade_mesh = blade_mesh.set(csdl.slice[:grid_nr,:,:], value=lower_blade_mesh[::-1,:,:][:,:,:])
-    blade_mesh = blade_mesh.set(csdl.slice[grid_nr:,:,:], value=upper_blade_mesh[::-1,:,:][:-1,:,:])
+    blade_mesh = blade_mesh.set(csdl.slice[grid_nr:,:,:], value=upper_blade_mesh[::-1,:,:][1:,:,:])
 
     if plot:
         rotor_geometry.plot_meshes(blade_mesh)
